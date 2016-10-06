@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -72,39 +74,46 @@ func fetch(url string) ([]response, error) {
 func main() {
 	var err error
 
-	res := &result{
-		Host:        "google.com/",
-		HTTPSOnly:   false,
-		HTTPSuccess: true,
-	}
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		host := scanner.Text()
+		fmt.Printf("Processing %v\n", host)
 
-	res.HTTPResponses, err = fetch("http://" + res.Host)
-	if err != nil {
-		res.HTTPSuccess = false
-		log.Fatal(err)
-	}
+		res := &result{
+			Host:        host + "/",
+			HTTPSOnly:   false,
+			HTTPSuccess: true,
+		}
 
-	finalHTTPResponse := res.HTTPResponses[len(res.HTTPResponses)-1]
-	res.FinalLocation = finalHTTPResponse.RequestURL
-
-	if strings.HasPrefix(res.FinalLocation, "https://") {
-		res.HTTPSSuccess = true
-		res.HTTPSOnly = true
-	} else {
-		res.HTTPSResponses, err = fetch("https://" + res.Host)
+		res.HTTPResponses, err = fetch("http://" + res.Host)
 		if err != nil {
-			res.HTTPSSuccess = false
+			res.HTTPSuccess = false
 			log.Fatal(err)
 		}
 
-		finalHTTPSResponse := res.HTTPSResponses[len(res.HTTPSResponses)-1]
-		res.FinalLocation = finalHTTPSResponse.RequestURL
-	}
+		finalHTTPResponse := res.HTTPResponses[len(res.HTTPResponses)-1]
+		res.FinalLocation = finalHTTPResponse.RequestURL
 
-	serialize, err := json.Marshal(res)
-	if err != nil {
-		fmt.Println(err)
-		return
+		if strings.HasPrefix(res.FinalLocation, "https://") {
+			res.HTTPSSuccess = true
+			res.HTTPSOnly = true
+		} else {
+			res.HTTPSResponses, err = fetch("https://" + res.Host)
+			if err != nil {
+				res.HTTPSSuccess = false
+				log.Fatal(err)
+			}
+
+			finalHTTPSResponse := res.HTTPSResponses[len(res.HTTPSResponses)-1]
+			res.FinalLocation = finalHTTPSResponse.RequestURL
+		}
+
+		serialize, err := json.Marshal(res)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		fmt.Println(string(serialize))
+
 	}
-	fmt.Println(string(serialize))
 }
