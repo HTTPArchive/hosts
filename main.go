@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type response struct {
 type result struct {
 	Host          string
 	FinalLocation string
+	Error         string
 
 	HTTPResponses []response
 	HTTPSuccess   bool
@@ -36,6 +38,11 @@ type transport struct {
 	http.Transport
 	Responses []response
 }
+
+var (
+	wg       sync.WaitGroup
+	errorLog *log.Logger
+)
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := http.DefaultTransport.RoundTrip(req)
@@ -71,49 +78,117 @@ func fetch(url string) ([]response, error) {
 	return t.Responses, err
 }
 
-func main() {
-	var err error
+func collector(updateInterval time.Duration, out *os.File) chan<- *result {
+	results := make(chan *result)
+	ticker := time.NewTicker(updateInterval)
 
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		host := scanner.Text()
-		fmt.Printf("Processing %v\n", host)
+	start := time.Now()
+	processed := 0
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				elapsed := time.Since(start).Seconds()
+				fmt.Printf("Processed: %v, Rate: %.2f hosts/s\n",
+					processed, float64(processed)/elapsed)
+			}
+		}
+	}()
 
+	go func() {
+		defer wg.Done()
+
+		for res := range results {
+			serialize, err := json.Marshal(res)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			out.Write(serialize)
+			out.Write([]byte("\n"))
+
+			processed++
+		}
+	}()
+
+	return results
+}
+
+func fetcher(in <-chan string, out chan<- *result) {
+	defer wg.Done()
+
+	for host := range in {
 		res := &result{
 			Host:        host + "/",
 			HTTPSOnly:   false,
 			HTTPSuccess: true,
 		}
 
+		var err error
 		res.HTTPResponses, err = fetch("http://" + res.Host)
 		if err != nil {
-			res.HTTPSuccess = false
-			log.Fatal(err)
+			errorLog.Println(err)
+			res.Error = err.Error()
+
+			out <- res
+			return
 		}
 
 		finalHTTPResponse := res.HTTPResponses[len(res.HTTPResponses)-1]
 		res.FinalLocation = finalHTTPResponse.RequestURL
 
 		if strings.HasPrefix(res.FinalLocation, "https://") {
-			res.HTTPSSuccess = true
 			res.HTTPSOnly = true
 		} else {
 			res.HTTPSResponses, err = fetch("https://" + res.Host)
 			if err != nil {
-				res.HTTPSSuccess = false
-				log.Fatal(err)
+				errorLog.Println(err)
+				res.Error = err.Error()
+
+				out <- res
+				return
 			}
 
 			finalHTTPSResponse := res.HTTPSResponses[len(res.HTTPSResponses)-1]
 			res.FinalLocation = finalHTTPSResponse.RequestURL
 		}
 
-		serialize, err := json.Marshal(res)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		fmt.Println(string(serialize))
-
+		out <- res
 	}
+}
+
+func main() {
+	errorLog = log.New(os.Stderr, "ERROR: ", log.Ldate)
+
+	out, err := os.Create("results.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer out.Close()
+
+	workQueue := make(chan string, 100)
+	resultQueue := collector(1*time.Second, out)
+
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go fetcher(workQueue, resultQueue)
+	}
+
+	// Read TLD's from STDIN and queue for processing
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		host := scanner.Text()
+		workQueue <- host
+	}
+
+	// All the URLS have been queued, close the channel and
+	// wait for the fetcher routines to drain the channel
+	close(workQueue)
+	wg.Wait()
+
+	// Wait for the collector to signal that it has finished
+	// writing out all the results
+	close(resultQueue)
+	wg.Add(1)
+	wg.Wait()
 }
