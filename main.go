@@ -27,10 +27,10 @@ import (
 // }
 
 type response struct {
-	URL      string
-	Status   int
-	Protocol string
-	Location string
+	RequestURL string
+	Status     int
+	Protocol   string
+	Headers    http.Header
 	// TLSVersion     string
 	// TLSCipherSuite uint16
 }
@@ -63,10 +63,10 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	t.Responses = append(t.Responses,
 		response{
-			URL:      req.URL.String(),
-			Status:   resp.StatusCode,
-			Protocol: resp.Proto,
-			Location: resp.Header.Get("Location"),
+			RequestURL: req.URL.String(),
+			Status:     resp.StatusCode,
+			Protocol:   resp.Proto,
+			Headers:    resp.Header,
 			// TLSVersion: string(resp.TLS.Version),
 			// TLSCipherSuite: resp.TLS.CipherSuite,
 		})
@@ -94,7 +94,7 @@ func main() {
 	var err error
 
 	res := &result{
-		Host:        "igvita.com/",
+		Host:        "google.com/",
 		HTTPSOnly:   false,
 		HTTPSuccess: true,
 	}
@@ -106,7 +106,7 @@ func main() {
 	}
 
 	finalHTTPResponse := res.HTTPResponses[len(res.HTTPResponses)-1]
-	res.FinalLocation = finalHTTPResponse.URL
+	res.FinalLocation = finalHTTPResponse.RequestURL
 
 	if strings.HasPrefix(res.FinalLocation, "https://") {
 		res.HTTPSSuccess = true
@@ -119,7 +119,7 @@ func main() {
 		}
 
 		finalHTTPSResponse := res.HTTPSResponses[len(res.HTTPSResponses)-1]
-		res.FinalLocation = finalHTTPSResponse.URL
+		res.FinalLocation = finalHTTPSResponse.RequestURL
 	}
 
 	serialize, err := json.Marshal(res)
