@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,30 +10,12 @@ import (
 	"time"
 )
 
-// {
-// 	Host: "google.com"
-// 	Requests: [
-// 		{
-// 			URL: "http://google.com",
-// 			Status: 301
-// 			Protocol: "HTTP/1.1"
-// 			Location: "http://google.com/"
-// 			TLSVersion: "1.2"
-// 			TLSCipherSuite: "..."
-// 		},
-// 		{
-//        ....
-// 		}
-// 	]
-// }
-
 type response struct {
 	RequestURL string
 	Status     int
 	Protocol   string
 	Headers    http.Header
-	// TLSVersion     string
-	// TLSCipherSuite uint16
+	TLS        *tls.ConnectionState
 }
 
 type result struct {
@@ -47,15 +30,12 @@ type result struct {
 	HTTPSOnly      bool
 }
 
-// transport is an http.RoundTripper that keeps track of the in-flight
-// request and implements hooks to report HTTP tracing events.
 type transport struct {
 	http.Transport
 	Responses []response
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
-
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
 		return resp, err
@@ -67,8 +47,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			Status:     resp.StatusCode,
 			Protocol:   resp.Proto,
 			Headers:    resp.Header,
-			// TLSVersion: string(resp.TLS.Version),
-			// TLSCipherSuite: resp.TLS.CipherSuite,
+			TLS:        resp.TLS,
 		})
 
 	return resp, err
