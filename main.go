@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	log "github.com/Sirupsen/logrus"
 )
 
 type response struct {
@@ -26,23 +28,32 @@ type result struct {
 	FinalLocation string
 	Error         string
 
-	HTTPResponses []response
-	HTTPSuccess   bool
-
+	HTTPResponses  []response
 	HTTPSResponses []response
-	HTTPSSuccess   bool
 	HTTPSOnly      bool
 }
 
 type transport struct {
 	http.Transport
+	Dial      net.Dialer
 	Responses []response
 }
 
 var (
-	wg       sync.WaitGroup
-	errorLog *log.Logger
+	wg sync.WaitGroup
 )
+
+func init() {
+	// Log as JSON instead of the default ASCII formatter.
+	// log.SetFormatter(&log.JSONFormatter{})
+	log.SetFormatter(&log.TextFormatter{})
+
+	// Output to stderr instead of stdout, could also be a file.
+	log.SetOutput(os.Stderr)
+
+	// Only log the warning severity or above.
+	log.SetLevel(log.DebugLevel)
+}
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := http.DefaultTransport.RoundTrip(req)
@@ -67,12 +78,16 @@ func fetch(url string) ([]response, error) {
 	req.Header.Set("User-Agent", "YourUserAgentString")
 
 	t := &transport{}
-	t.DisableKeepAlives = true
-	t.TLSHandshakeTimeout = 5 * time.Second
-	t.ExpectContinueTimeout = 1 * time.Second
-	t.ResponseHeaderTimeout = 10 * time.Second
 
-	client := &http.Client{Transport: t}
+	t.DisableKeepAlives = true
+	t.TLSHandshakeTimeout = 3 * time.Second
+	t.ExpectContinueTimeout = 1 * time.Second
+	t.ResponseHeaderTimeout = 5 * time.Second
+
+	client := &http.Client{
+		Timeout:   6 * time.Second,
+		Transport: t,
+	}
 	_, err := client.Do(req)
 
 	return t.Responses, err
@@ -99,6 +114,9 @@ func collector(updateInterval time.Duration, out *os.File) chan<- *result {
 		defer wg.Done()
 
 		for res := range results {
+			log.WithFields(log.Fields{
+				"host": res.Host,
+			}).Debug("Writer recieved data")
 			serialize, err := json.Marshal(res)
 			if err != nil {
 				fmt.Println(err)
@@ -107,6 +125,11 @@ func collector(updateInterval time.Duration, out *os.File) chan<- *result {
 			out.Write(serialize)
 			out.Write([]byte("\n"))
 
+			log.WithFields(log.Fields{
+				"host":       res.Host,
+				"https-only": res.HTTPSOnly,
+				"location":   res.FinalLocation,
+			}).Info("Writer flushed data")
 			processed++
 		}
 	}()
@@ -119,46 +142,69 @@ func fetcher(in <-chan string, out chan<- *result) {
 
 	for host := range in {
 		res := &result{
-			Host:        host + "/",
-			HTTPSOnly:   false,
-			HTTPSuccess: true,
+			Host:      host + "/",
+			HTTPSOnly: false,
 		}
+		log.WithFields(log.Fields{
+			"host": res.Host,
+		}).Debug("Starting HTTP check")
 
 		var err error
 		res.HTTPResponses, err = fetch("http://" + res.Host)
 		if err != nil {
-			errorLog.Println(err)
+			log.Error(err)
 			res.Error = err.Error()
 
 			out <- res
-			return
+			continue
 		}
 
 		finalHTTPResponse := res.HTTPResponses[len(res.HTTPResponses)-1]
 		res.FinalLocation = finalHTTPResponse.RequestURL
+		log.WithFields(log.Fields{
+			"host":   res.Host,
+			"status": finalHTTPResponse.Status,
+		}).Debug("Processed HTTP host")
 
 		if strings.HasPrefix(res.FinalLocation, "https://") {
+			log.WithFields(log.Fields{
+				"host": res.Host,
+			}).Debug("Skipping HTTPS check; HTTP -> HTTPS")
+
 			res.HTTPSOnly = true
 		} else {
+			log.WithFields(log.Fields{
+				"host": res.Host,
+			}).Debug("Starting HTTPS check")
+
 			res.HTTPSResponses, err = fetch("https://" + res.Host)
 			if err != nil {
-				errorLog.Println(err)
+				log.Error(err)
 				res.Error = err.Error()
 
 				out <- res
-				return
+				continue
 			}
 
 			finalHTTPSResponse := res.HTTPSResponses[len(res.HTTPSResponses)-1]
 			res.FinalLocation = finalHTTPSResponse.RequestURL
+
+			log.WithFields(log.Fields{
+				"host":   res.Host,
+				"status": finalHTTPSResponse.Status,
+			}).Debug("Processed HTTPS host.")
 		}
+
+		log.WithFields(log.Fields{
+			"host":       res.Host,
+			"https-only": res.HTTPSOnly,
+		}).Debug("Finished processing HTTP + HTTPS")
 
 		out <- res
 	}
 }
 
 func main() {
-	errorLog = log.New(os.Stderr, "ERROR: ", log.Ldate)
 
 	out, err := os.Create("results.json")
 	if err != nil {
@@ -167,9 +213,9 @@ func main() {
 	defer out.Close()
 
 	workQueue := make(chan string, 100)
-	resultQueue := collector(1*time.Second, out)
+	resultQueue := collector(5*time.Second, out)
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 1; i++ {
 		wg.Add(1)
 		go fetcher(workQueue, resultQueue)
 	}
