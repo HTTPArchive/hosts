@@ -60,6 +60,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return resp, err
 	}
+	defer resp.Body.Close()
 
 	t.Responses = append(t.Responses,
 		response{
@@ -212,10 +213,10 @@ func main() {
 	}
 	defer out.Close()
 
-	workQueue := make(chan string, 100)
+	workQueue := make(chan string, 500)
 	resultQueue := collector(5*time.Second, out)
 
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 250; i++ {
 		wg.Add(1)
 		go fetcher(workQueue, resultQueue)
 	}
