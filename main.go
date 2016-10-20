@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"crypto/tls"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +33,10 @@ type result struct {
 
 	HTTPResponses  []response
 	HTTPSResponses []response
-	HTTPSOnly      bool
+
+	HTTPOk    bool
+	HTTPSOk   bool
+	HTTPSOnly bool
 }
 
 type transport struct {
@@ -52,7 +58,12 @@ func init() {
 	log.SetOutput(os.Stderr)
 
 	// Only log the warning severity or above.
-	log.SetLevel(log.DebugLevel)
+	debug := os.Getenv("DEBUG")
+	if debug == "true" {
+		log.SetLevel(log.DebugLevel)
+	} else {
+		log.SetLevel(log.InfoLevel)
+	}
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -76,7 +87,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func fetch(url string) ([]response, error) {
 	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("User-Agent", "YourUserAgentString")
+	req.Header.Set("User-Agent", "httparchive.org")
 
 	t := &transport{}
 
@@ -104,9 +115,11 @@ func collector(updateInterval time.Duration, out *os.File) chan<- *result {
 		for {
 			select {
 			case <-ticker.C:
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
 				elapsed := time.Since(start).Seconds()
-				fmt.Printf("Processed: %v, Rate: %.2f hosts/s\n",
-					processed, float64(processed)/elapsed)
+				fmt.Printf("[Fetcher] processed %v, Rate: %.2f hosts/s. [Memory] Sys: %d, Alloc: %d, Objects: %d\n",
+					processed, float64(processed)/elapsed, m.HeapSys, m.HeapAlloc, m.HeapObjects)
 			}
 		}
 	}()
@@ -143,7 +156,9 @@ func fetcher(in <-chan string, out chan<- *result) {
 
 	for host := range in {
 		res := &result{
-			Host:      host + "/",
+			Host:      host,
+			HTTPOk:    false,
+			HTTPSOk:   false,
 			HTTPSOnly: false,
 		}
 		log.WithFields(log.Fields{
@@ -167,11 +182,16 @@ func fetcher(in <-chan string, out chan<- *result) {
 			"status": finalHTTPResponse.Status,
 		}).Debug("Processed HTTP host")
 
+		if finalHTTPResponse.Status == 200 {
+			res.HTTPOk = true
+		}
+
 		if strings.HasPrefix(res.FinalLocation, "https://") {
 			log.WithFields(log.Fields{
 				"host": res.Host,
 			}).Debug("Skipping HTTPS check; HTTP -> HTTPS")
 
+			res.HTTPSOk = true
 			res.HTTPSOnly = true
 		} else {
 			log.WithFields(log.Fields{
@@ -190,6 +210,10 @@ func fetcher(in <-chan string, out chan<- *result) {
 			finalHTTPSResponse := res.HTTPSResponses[len(res.HTTPSResponses)-1]
 			res.FinalLocation = finalHTTPSResponse.RequestURL
 
+			if finalHTTPSResponse.Status == 200 {
+				res.HTTPSOk = true
+			}
+
 			log.WithFields(log.Fields{
 				"host":   res.Host,
 				"status": finalHTTPSResponse.Status,
@@ -206,17 +230,21 @@ func fetcher(in <-chan string, out chan<- *result) {
 }
 
 func main() {
+	// Parse command line flags
+	workers := flag.Int("workers", 10, "number of parallel HTTP fetches")
+	output := flag.String("output", "results.json", "output file")
+	flag.Parse()
 
-	out, err := os.Create("results.json")
+	out, err := os.Create(*output)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer out.Close()
 
-	workQueue := make(chan string, 500)
 	resultQueue := collector(5*time.Second, out)
+	workQueue := make(chan string, int(math.Max(float64(*workers), float64(1))))
 
-	for i := 0; i < 250; i++ {
+	for i := 0; i < int(math.Max(float64(*workers/2), float64(1))); i++ {
 		wg.Add(1)
 		go fetcher(workQueue, resultQueue)
 	}
@@ -224,8 +252,7 @@ func main() {
 	// Read TLD's from STDIN and queue for processing
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
-		host := scanner.Text()
-		workQueue <- host
+		workQueue <- scanner.Text()
 	}
 
 	// All the URLS have been queued, close the channel and
