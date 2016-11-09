@@ -22,6 +22,10 @@ OptionParser.new do |opts|
     options[:dmoz] = v
   end
 
+  opts.on('-s', '--scan=file', 'Host scan input data') do |v|
+    options[:scan] = v
+  end
+
   opts.on('-o', '--output=file', 'Output file') do |v|
     options[:output] = v || 'urls.json.gz'
   end
@@ -32,23 +36,35 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-if options[:alexa].nil? or options[:dmoz].nil?
+if options[:alexa].nil? or options[:dmoz].nil? or options[:scan].nil?
   raise OptionParser::MissingArgument
 end
 
-puts "Loading Alexa data..."
+#
+# {
+#   "Alexa_domain": "freelancer.com",
+#   "Alexa_rank": 771,
+#   "DMOZ_topic": [
+#     "Top\/Business\/Business_Services\/Consulting\/..."
+#   ],
+#   "DMOZ_url": "http:\/\/www.freelancer.com\/",
+#   "DMOZ_title": "Freelancer",
+#   "DMOZ_description": "At a small commission..."
+# }
+#
+STDERR.puts "Loading Alexa data..."
 IO.popen("unzip -p #{options[:alexa]}", 'rb') do |io|
   io.each do |line|
     rank, name = line.strip.split(',')
     res[name] = {
-        alexa_domain: name,
-        alexa_rank: rank.to_i,
-        dmoz_topic: []
+        Alexa_domain: name,
+        Alexa_rank: rank.to_i,
+        DMOZ_topic: []
     }
   end
 end
 
-puts "Loading DMOZ data..."
+STDERR.puts "Loading DMOZ data..."
 Zlib::GzipReader.open(options[:dmoz]) do |gz|
   Nokogiri::XML::Reader(gz).each do |node|
     #
@@ -68,23 +84,28 @@ Zlib::GzipReader.open(options[:dmoz]) do |gz|
 
       if data = res[url.domain + "." + url.public_suffix]
         matched += 1
-        data[:dmoz_topic] << page.at('topic').text
-        data[:dmoz_url] ||= page.attribute('about').text
-        data[:dmoz_title] ||= page.xpath('//d:Title').text
-        data[:dmoz_description] ||= page.xpath('//d:Description').text
+        data[:DMOZ_topic] << page.at('topic').text
+        data[:DMOZ_url] ||= page.attribute('about').text
+        data[:DMOZ_title] ||= page.xpath('//d:Title').text
+        data[:DMOZ_description] ||= page.xpath('//d:Description').text
       end
     end
   end
-
 end
 
-File.open('urls.json.gz', 'w') do |f|
-  gz = Zlib::GzipWriter.new(f)
-  res.each_value do |val|
-    gz.puts Yajl::Encoder.encode(val)
+STDERR.puts "Matched #{matched} DMOZ domains."
+STDERR.puts "Joining results with host scanner data..."
+
+Zlib::GzipReader.open(options[:scan]) do |gz|
+  parser = Yajl::Parser.new
+  gz.each_line do |line|
+    parser.parse(line) do |scanned|
+      if alexa_dmoz = res.delete(scanned["Host"])
+        scanned.merge!(alexa_dmoz)
+      end
+      puts Yajl::Encoder.encode(scanned)
+    end
   end
-  gz.close
 end
 
-puts "Done. Matched #{matched} DMOZ domains."
-
+STDERR.puts "Done"
