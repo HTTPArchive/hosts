@@ -109,3 +109,4 @@ Zlib::GzipReader.open(options[:scan]) do |gz|
 end
 
 STDERR.puts "Done"
+
