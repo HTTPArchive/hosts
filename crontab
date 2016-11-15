@@ -1,0 +1,2 @@
+0 1 1 * * /bin/bash -l -c 'cd /home/igrigorik/hosts && ./run.sh' >> /var/log/HA-host-scan.log 2>&1
+0 1 15 * * /bin/bash -l -c 'cd /home/igrigorik/hosts && ./run.sh' >> /var/log/HA-host-scan.log 2>&1
