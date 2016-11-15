@@ -35,7 +35,7 @@ ulimit -n 50000
 go build
 
 if [ ! -f "$DATA/hosts.json.gz" ]; then
-  zcat $DATA/top-1m.csv.zip | cut -d, -f2 | ./hosts -workers=500 -output=$DATA/hosts.json 2> /var/log/HA-host-scanner.log
+  zcat $DATA/top-1m.csv.zip | cut -d, -f2 | ./hosts -workers=500 -output=$DATA/hosts.json 2> /var/log/HA-host-crawl.log
   if [ $? -ne 0 ]; then
     echo "Host scanner failed, exiting."
     exit
