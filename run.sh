@@ -1,7 +1,14 @@
 #!/bin/bash
 
+if [ -n "$1" ]; then
+  TIMESTAMP=$1
+else
+  TIMESTAMP=$(date "+%Y%m%d")
+fi
+
+echo "Starting processing for $TIMESTAMP"
+
 BASE=`pwd`
-TIMESTAMP=$(date "+%Y%m%d")
 DATA=$HOME/archive/urls/$TIMESTAMP
 
 mkdir -p $DATA
@@ -49,7 +56,7 @@ fi
 
 if [ ! -f "done" ]; then
   echo "Starting data join process..."
-  ruby process.rb -a $DATA/top-1m.csv.zip -d $DATA/content.rdf.u8.gz -s $DATA/hosts.json.gz 2> /var/log/HA-host-join.log
+  ruby process.rb -a $DATA/top-1m.csv.zip -d $DATA/content.rdf.u8.gz -s $DATA/hosts.json.gz > $DATA/joined.json 2> /var/log/HA-host-join.log
 
   if [ $? -ne 0 ]; then
     echo "Data join failed, exiting."
@@ -62,9 +69,11 @@ fi
 cd $DATA
 
 echo -e "Syncing data to Google Storage..."
-gsutil cp -n *.{zip,gz} gs://httparchive/urls/${TIMESTAMP}/
-
 echo "" > "done"
-gsutil cp "done" gs://httparchive/urls/${TIMESTAMP}/
+gsutil cp -n * gs://httparchive/urls/${TIMESTAMP}/
+
+echo -e "Kicking off Dataflow pipeline..."
+cd $BASE
+python dataflow.py --input gs://httparchive/urls/$TIMESTAMP/joined.json --output httparchive:urls.$TIMESTAMP
 
 echo -e "Done."
