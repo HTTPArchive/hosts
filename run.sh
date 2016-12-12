@@ -36,17 +36,28 @@ else
   echo -e "DMOZ data already downloaded, skipping."
 fi
 
+echo -e "Cleaning and splitting host list."
+mkdir -p tmp && cd tmp
+zcat ../top-1m.csv.zip | cut -d, -f2 | split --lines=100000 - split-
+
 cd $BASE
 export GOPATH=~/hosts
 ulimit -n 50000
 go build
 
 if [ ! -f "$DATA/hosts.json.gz" ]; then
-  zcat $DATA/top-1m.csv.zip | cut -d, -f2 | ./hosts -workers=500 -output=$DATA/hosts.json 2> /var/log/HA-host-crawl.log
-  if [ $? -ne 0 ]; then
-    echo "Host scanner failed, exiting."
-    exit
-  fi
+  # cremove old scan results, if present.
+  rm $DATA/hosts.json
+
+  for f in $DATA/tmp/split-*
+  do
+    echo "Processing $f host file..."
+    ./hosts -workers=500 -output=$DATA/hosts.json < $f 2> /var/log/HA-host-crawl.log
+    if [ $? -ne 0 ]; then
+      echo "Host scanner failed, exiting."
+      exit
+    fi
+  done
 
   echo -e "Compressing host scan results..."
   pigz $DATA/hosts.json

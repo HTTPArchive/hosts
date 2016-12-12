@@ -235,7 +235,7 @@ func main() {
 	output := flag.String("output", "results.json", "output file")
 	flag.Parse()
 
-	out, err := os.Create(*output)
+	out, err := os.OpenFile(*output, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
 	if err != nil {
 		log.Fatal(err)
 	}
